@@ -1,0 +1,19 @@
+# Terraform working files
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfplan
+.terraformrc
+terraform.rc
+
+# Downloaded public modules
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store

@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#071423">
+    <title>Terraform Relationship Explorer</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Terraform Relationship Explorer home">
+        <span class="brand-mark" aria-hidden="true">T</span>
+        <span>Terraform <strong>Relationship Explorer</strong></span>
+      </a>
+      <div class="topbar-actions">
+        <span class="provider-tag">AWS provider</span>
+        <a class="docs-link" href="https://registry.terraform.io/providers/hashicorp/aws/latest" target="_blank" rel="noreferrer">Provider docs ↗</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="intro">
+        <div>
+          <p class="eyebrow">EXPLORE RESOURCE CONNECTIONS</p>
+          <h1>See how AWS resources fit together.</h1>
+          <p class="intro-copy">Search AWS Terraform resources, inspect observed references, and save useful paths for later.</p>
+        </div>
+        <div class="mode-switch" role="tablist" aria-label="Explorer mode">
+          <button class="mode-button active" id="mapping-mode" role="tab" aria-selected="true" aria-controls="workspace" data-mode="mapping">Mapping</button>
+          <button class="mode-button" id="saved-mode" role="tab" aria-selected="false" aria-controls="workspace" data-mode="saved">Saved mappings <span id="saved-count" class="count-badge">0</span></button>
+        </div>
+      </section>
+
+      <section class="toolbar" aria-label="Resource search and actions">
+        <form id="search-form" class="search-box">
+          <label for="resource-search" class="sr-only">Search AWS Terraform resources</label>
+          <span class="search-icon" aria-hidden="true">⌕</span>
+          <input id="resource-search" type="search" list="resource-options" placeholder="Search resources, e.g. aws_vpc" autocomplete="off">
+          <datalist id="resource-options"></datalist>
+          <button type="submit" class="button button-primary">Explore</button>
+        </form>
+        <div class="toolbar-actions">
+          <button id="save-button" class="button button-secondary" type="button">＋ Save mapping</button>
+          <button id="reset-button" class="button button-quiet" type="button">Reset</button>
+        </div>
+      </section>
+
+      <div id="notice" class="notice" role="status" aria-live="polite"></div>
+      <div id="error-banner" class="error-banner" role="alert" hidden></div>
+
+      <section id="workspace" class="workspace" aria-label="Resource relationship explorer">
+        <aside class="sidebar">
+          <section class="side-section">
+            <div class="side-heading">
+              <h2>Recent resources</h2>
+              <button id="clear-history" class="text-button" type="button">Clear</button>
+            </div>
+            <ol id="history-list" class="resource-list"></ol>
+            <p id="history-empty" class="empty-note">Resources you explore will show up here.</p>
+          </section>
+          <div class="sidebar-note">
+            <span class="note-icon" aria-hidden="true">i</span>
+            <p>Connections describe documented input references and common associations. Terraform dependencies are determined by configuration expressions, not by this map.</p>
+          </div>
+        </aside>
+
+        <section class="map-panel" id="map-panel" aria-label="Interactive relationship map">
+          <div class="map-heading">
+            <div>
+              <p class="eyebrow">DEPENDENCY PATH · ROOT TO DEPENDANTS</p>
+              <h2 id="map-title">Select a resource to begin</h2>
+            </div>
+            <div class="map-controls">
+              <button id="zoom-out" class="icon-button" type="button" aria-label="Zoom out">−</button>
+              <button id="zoom-in" class="icon-button" type="button" aria-label="Zoom in">＋</button>
+              <button id="center-map" class="icon-button" type="button" aria-label="Center map">◎</button>
+              <button id="collapse-groups" class="icon-button" type="button" aria-label="Collapse all collections" title="Collapse all collections" hidden>⊖</button>
+            </div>
+          </div>
+          <div class="graph-frame" id="graph-frame">
+            <svg id="relationship-graph" viewBox="0 0 1000 620" role="img" aria-label="Interactive graph of AWS Terraform resource relationships">
+              <defs>
+                <pattern id="dot-grid" width="24" height="24" patternUnits="userSpaceOnUse">
+                  <circle cx="1" cy="1" r="1" fill="#24364b"></circle>
+                </pattern>
+                <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 Z" fill="#40c5d8"></path>
+                </marker>
+              </defs>
+              <rect class="graph-background" x="0" y="0" width="1000" height="620"></rect>
+              <g id="graph-content"></g>
+            </svg>
+            <div id="graph-empty" class="graph-empty">
+              <span class="empty-orbit" aria-hidden="true">⌕</span>
+              <strong>Your map starts with a resource</strong>
+              <span>Search above or try one of the examples.</span>
+              <div id="example-resources" class="example-chips"></div>
+            </div>
+          </div>
+          <div class="map-footer">
+            <div class="legend">
+              <span><i class="legend-dot focus-dot"></i>Root and selected path</span>
+              <span><i class="legend-line"></i>Prerequisite → dependant</span>
+            </div>
+            <p>Drag bubbles to arrange · Scroll to zoom · Drag the canvas to pan</p>
+          </div>
+        </section>
+
+        <aside class="details-panel" id="details-panel">
+          <p class="eyebrow">RESOURCE DETAILS</p>
+          <div id="resource-details" class="details-content">
+            <div class="details-placeholder">
+              <span aria-hidden="true">↖</span>
+              <p>Select a bubble to see its relationship details.</p>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <section id="saved-workspace" class="saved-workspace" hidden>
+        <aside class="saved-sidebar">
+          <div class="side-heading">
+            <div>
+              <p class="eyebrow">YOUR COLLECTION</p>
+              <h2>Saved mappings</h2>
+            </div>
+            <span id="saved-sidebar-count" class="count-badge">0</span>
+          </div>
+          <p class="saved-help">Save a dependency path from Mapping mode to keep its root, selected chain, and expanded branches.</p>
+          <ol id="saved-list" class="saved-list"></ol>
+          <p id="saved-empty" class="empty-note">Your saved maps will appear here.</p>
+        </aside>
+        <div class="saved-preview" id="saved-map-host">
+          <div class="saved-preview-empty" id="saved-preview-empty">
+            <span class="empty-orbit" aria-hidden="true">✦</span>
+            <strong>Choose a saved mapping</strong>
+            <span>Or return to Mapping to save your current view.</span>
+            <button id="go-to-mapping" class="button button-secondary" type="button">Go to Mapping</button>
+          </div>
+        </div>
+      </section>
+
+      <footer class="page-footer">
+        <span>Relationships are estimates from provider schemas and sampled public modules. Verify each reference in provider documentation.</span>
+        <a href="https://registry.terraform.io/providers/hashicorp/aws/latest/docs" target="_blank" rel="noreferrer">Browse AWS resource docs ↗</a>
+      </footer>
+    </main>
+    <dialog id="mapping-dialog" class="mapping-dialog" aria-labelledby="mapping-dialog-title">
+      <form id="mapping-form">
+        <p class="eyebrow">MAPPING NAME</p>
+        <h2 id="mapping-dialog-title">Save mapping</h2>
+        <label for="mapping-name">Name</label>
+        <input id="mapping-name" name="name" type="text" maxlength="60" required autocomplete="off">
+        <div class="dialog-actions">
+          <button id="cancel-mapping" class="button button-quiet" type="button">Cancel</button>
+          <button id="submit-mapping" class="button button-primary" type="submit">Save mapping</button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>
