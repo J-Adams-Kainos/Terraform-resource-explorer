@@ -19,6 +19,7 @@ Alternatively, run `python3 -m http.server 8080` from the project directory and 
 
 - Search by Terraform resource name and choose **Explore**.
 - The map is a top-down dependency path: the root resource is at the top, then its dependant collections and resources appear below.
+- Potential prerequisite collections and their resource bubbles appear above the searched resource. These are observed incoming references, not proof that every configuration requires them. Select a prerequisite to add it to the top of the path, then keep following the chain upward; the original resource remains below it. Collapse collections to simplify the view.
 - Expand a dependant collection to reveal its resources. Selecting a dependant keeps the chosen chain visible and adds that resource's dependant collections underneath, so you can follow the path step by step. Click an expanded collection to collapse its branch, or use **Collapse all collections** to return to the root.
 - Extending the path preserves the current zoom. Sibling collections and resources on the active level remain available but are visually minimized; category collections use squared cards while resources use softer rounded bubbles.
 - The map fits the full dependency path while preserving the zoom controls and pan behavior.

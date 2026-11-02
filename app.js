@@ -118,6 +118,9 @@ function setFocus(id, addHistory = true) {
   state.focus = id;
   state.path = [id];
   state.expanded.clear();
+  for (const group of groupConnections(getConnections(id, "incoming"), "incoming")) {
+    state.expanded.add(upstreamGroupKey(id, group.category));
+  }
   state.positions = {};
   state.userZoom = 1;
   state.fitNextRender = true;
@@ -126,6 +129,47 @@ function setFocus(id, addHistory = true) {
   if (addHistory) addHistoryEntry(id);
   elements.search.value = id;
   elements.mapTitle.textContent = id;
+  renderGraph();
+  renderDetails();
+  updateSelectedSavedMapping();
+}
+
+function selectPrerequisite(id, dependentId) {
+  const dependentIndex = state.path.indexOf(dependentId);
+  if (dependentIndex !== 0 || !state.relationships.some((relationship) => relationship.from === id && relationship.to === dependentId)) {
+    showNotice("That resource is not an observed prerequisite of the current path root.");
+    return;
+  }
+
+  const dependent = resourceById(dependentId);
+  state.path = [id, ...state.path];
+
+  const shiftedExpanded = new Set();
+  for (const key of state.expanded) {
+    const match = key.match(/^depth:(\d+):(.*)$/);
+    if (match) shiftedExpanded.add(`depth:${Number(match[1]) + 1}:${match[2]}`);
+  }
+  for (const group of groupConnections(getConnections(id, "incoming"), "incoming")) {
+    shiftedExpanded.add(upstreamGroupKey(id, group.category));
+  }
+  if (dependent?.category) shiftedExpanded.add(groupKey(id, dependent.category, 0));
+  state.expanded = shiftedExpanded;
+
+  const shiftedPositions = {};
+  for (const [key, position] of Object.entries(state.positions)) {
+    const pathMatch = key.match(/^path:(\d+):(.+)$/);
+    const childMatch = key.match(/^child:(\d+):(.+)$/);
+    const groupMatch = key.match(/^group:depth:(\d+):(.+)$/);
+    if (pathMatch) {
+      shiftedPositions[`path:${Number(pathMatch[1]) + 1}:${pathMatch[2]}`] = { ...position, y: position.y + 190 };
+    } else if (childMatch) {
+      shiftedPositions[`child:${Number(childMatch[1]) + 1}:${childMatch[2]}`] = { ...position, y: position.y + 190 };
+    } else if (groupMatch) {
+      shiftedPositions[`group:depth:${Number(groupMatch[1]) + 1}:${groupMatch[2]}`] = { ...position, y: position.y + 190 };
+    }
+  }
+  state.positions = shiftedPositions;
+  addHistoryEntry(id);
   renderGraph();
   renderDetails();
   updateSelectedSavedMapping();
@@ -208,6 +252,10 @@ function groupKey(parentId, category, depth) {
   return `depth:${depth}:${parentId}:${category}`;
 }
 
+function upstreamGroupKey(parentId, category) {
+  return `upstream:${parentId}:${category}`;
+}
+
 function getPosition(key, fallback) {
   return state.positions[key] || fallback;
 }
@@ -236,13 +284,13 @@ function drawVerticalEdge(from, to, parent, onPath = false) {
   parent.append(edge);
 }
 
-function createBubble(resource, position, { selected = false, root = false, pathIndex = -1, parentId = "", parentDepth = -1, category = "", minimized = false } = {}) {
+function createBubble(resource, position, { selected = false, root = false, pathIndex = -1, parentId = "", parentDepth = -1, category = "", minimized = false, direction = "outgoing" } = {}) {
   const group = svgElement("g", {
     class: `graph-node resource-node${selected ? " selected" : ""}${root ? " root-node" : ""}${pathIndex >= 0 ? " on-path" : ""}${minimized ? " minimized" : ""}`,
     transform: `translate(${position.x} ${position.y})`,
     tabindex: "0",
     role: "button",
-    "aria-label": `${root ? "Root resource, " : ""}${resource.id}, ${resource.name}`,
+    "aria-label": `${direction === "incoming" ? "Potential prerequisite, " : ""}${root ? "Root resource, " : ""}${resource.id}, ${resource.name}`,
     "data-resource-id": resource.id,
     "data-position-key": pathIndex >= 0
       ? `path:${pathIndex}:${resource.id}`
@@ -251,6 +299,7 @@ function createBubble(resource, position, { selected = false, root = false, path
     "data-parent-resource-id": parentId,
     "data-parent-depth": String(parentDepth),
     "data-group-category": category,
+    "data-direction": direction,
     "data-minimized": String(minimized)
   });
   const color = CATEGORY_COLORS[resource.category] || "#40c5d8";
@@ -274,21 +323,24 @@ function createBubble(resource, position, { selected = false, root = false, path
   return group;
 }
 
-function createGroupBubble(groupData, position, parentId, depth, minimized = false) {
-  const key = groupKey(parentId, groupData.category, depth);
+function createGroupBubble(groupData, position, parentId, depth, minimized = false, direction = "outgoing") {
+  const key = direction === "incoming"
+    ? upstreamGroupKey(parentId, groupData.category)
+    : groupKey(parentId, groupData.category, depth);
   const expanded = state.expanded.has(key);
   const selectedChild = resourceById(state.path[depth + 1]);
-  const onPath = selectedChild?.category === groupData.category;
+  const onPath = direction === "outgoing" && selectedChild?.category === groupData.category;
   const group = svgElement("g", {
     class: `graph-node category-node group-node${expanded ? " expanded" : ""}${onPath ? " on-path" : ""}${minimized ? " minimized" : ""}`,
     transform: `translate(${position.x} ${position.y})`,
     tabindex: "0",
     role: "button",
     "aria-expanded": String(expanded),
-    "aria-label": `${expanded ? "Collapse" : "Expand"} ${groupData.category}, ${groupData.members.length} dependants of ${parentId}`,
+    "aria-label": `${expanded ? "Collapse" : "Expand"} ${groupData.category}, ${groupData.members.length} ${direction === "incoming" ? "potential prerequisites of" : "dependants of"} ${parentId}`,
     "data-parent-resource-id": parentId,
     "data-parent-depth": String(depth),
     "data-group-category": groupData.category,
+    "data-direction": direction,
     "data-position-key": `group:${key}`,
     "data-expanded": String(expanded),
     "data-minimized": String(minimized)
@@ -330,7 +382,14 @@ function renderGraph() {
   }
 
   const descriptors = [];
-  const rootPosition = getPosition(`path:0:${state.path[0]}`, { x: 500, y: 80 });
+  const rootIncomingGroups = groupConnections(getConnections(state.path[0], "incoming"), "incoming")
+    .map((group) => ({
+      ...group,
+      members: group.members.filter((member) => !state.path.includes(member.id))
+    }))
+    .filter((group) => group.members.length > 0);
+  const rootDefaultY = rootIncomingGroups.length > 0 ? 264 : 80;
+  const rootPosition = getPosition(`path:0:${state.path[0]}`, { x: 500, y: rootDefaultY });
   descriptors.push({
     type: "resource",
     resource: resourceById(state.path[0]),
@@ -342,6 +401,89 @@ function renderGraph() {
 
   const nodeBounds = [{ x: rootPosition.x, y: rootPosition.y, width: 176, height: 68 }];
   const groupGap = 24;
+  if (rootIncomingGroups.length > 0) {
+    const groups = rootIncomingGroups.map((groupData) => {
+      const key = upstreamGroupKey(state.path[0], groupData.category);
+      const expanded = state.expanded.has(key);
+      const memberWidths = groupData.members.map(() => 176);
+      const expandedWidth = memberWidths.reduce((sum, width) => sum + width, 0)
+        + Math.max(0, memberWidths.length - 1) * 18;
+      return {
+        groupData,
+        key,
+        expanded,
+        width: expanded ? Math.max(182, expandedWidth) : 182,
+        memberWidths
+      };
+    });
+    const totalWidth = groups.reduce((width, group) => width + group.width, 0)
+      + Math.max(0, groups.length - 1) * groupGap;
+    let cursorX = 500 - totalWidth / 2;
+    const groupY = rootPosition.y - 92;
+    const memberY = rootPosition.y - 184;
+    addSvgText(
+      elements.graphContent,
+      500,
+      groupY - 46,
+      `POTENTIAL PREREQUISITES · ${state.path[0]}`,
+      "branch-heading vertical-heading"
+    );
+
+    for (const layout of groups) {
+      const { groupData, key, expanded, width, memberWidths } = layout;
+      const groupPosition = getPosition(`group:${key}`, { x: cursorX + width / 2, y: groupY });
+      descriptors.push({
+        type: "group",
+        groupData,
+        position: groupPosition,
+        parentId: state.path[0],
+        depth: -1,
+        expanded,
+        direction: "incoming"
+      });
+      nodeBounds.push({ x: groupPosition.x, y: groupPosition.y, width: 182, height: 68 });
+
+      drawVerticalEdge(
+        { x: groupPosition.x, y: groupPosition.y + 34 },
+        { x: rootPosition.x, y: rootPosition.y - 34 },
+        elements.graphContent
+      );
+
+      if (expanded) {
+        const rowWidth = memberWidths.reduce((sum, width) => sum + width, 0)
+          + Math.max(0, memberWidths.length - 1) * 18;
+        let memberCursorX = groupPosition.x - rowWidth / 2;
+        groupData.members.forEach((resource, index) => {
+          const memberWidth = memberWidths[index];
+          const positionKey = `child:-1:${state.path[0]}:${resource.id}`;
+          const position = getPosition(positionKey, {
+            x: memberCursorX + memberWidth / 2,
+            y: memberY
+          });
+          memberCursorX += memberWidth + 18;
+          descriptors.push({
+            type: "resource",
+            resource,
+            position,
+            parentId: state.path[0],
+            parentDepth: -1,
+            category: groupData.category,
+            pathIndex: -1,
+            selected: false,
+            direction: "incoming"
+          });
+          nodeBounds.push({ x: position.x, y: position.y, width: memberWidth, height: 68 });
+          drawVerticalEdge(
+            { x: position.x, y: position.y + 34 },
+            { x: groupPosition.x, y: groupPosition.y - 34 },
+            elements.graphContent
+          );
+        });
+      }
+      cursorX += width + groupGap;
+    }
+  }
+
   for (let depth = 0; depth < state.path.length; depth += 1) {
     const parentId = state.path[depth];
     const parentPosition = depth === 0
@@ -456,7 +598,7 @@ function renderGraph() {
   for (const descriptor of descriptors) {
     const node = descriptor.type === "resource"
       ? createBubble(descriptor.resource, descriptor.position, descriptor)
-      : createGroupBubble(descriptor.groupData, descriptor.position, descriptor.parentId, descriptor.depth, descriptor.minimized);
+      : createGroupBubble(descriptor.groupData, descriptor.position, descriptor.parentId, descriptor.depth, descriptor.minimized, descriptor.direction);
     elements.graphContent.append(node);
   }
   state.graphBounds = {
@@ -1106,24 +1248,35 @@ function initializeEvents() {
         }
         return;
       }
-      selectDependent(node.dataset.resourceId, node.dataset.parentResourceId);
+      if (node.dataset.direction === "incoming") {
+        selectPrerequisite(node.dataset.resourceId, node.dataset.parentResourceId);
+      } else {
+        selectDependent(node.dataset.resourceId, node.dataset.parentResourceId);
+      }
       return;
     }
     const parentId = node.dataset.parentResourceId;
     const depth = Number(node.dataset.parentDepth);
-    const key = groupKey(parentId, node.dataset.groupCategory, depth);
+    const direction = node.dataset.direction;
+    const key = direction === "incoming"
+      ? upstreamGroupKey(parentId, node.dataset.groupCategory)
+      : groupKey(parentId, node.dataset.groupCategory, depth);
     if (state.expanded.has(key)) {
       state.expanded.delete(key);
-      const selectedChild = resourceById(state.path[depth + 1]);
-      if (state.path.length > depth + 1 && selectedChild?.category === node.dataset.groupCategory) {
-        state.path = state.path.slice(0, depth + 1);
-        state.focus = parentId;
-        elements.search.value = state.focus;
-        elements.mapTitle.textContent = state.focus;
-        renderDetails();
-      }
-      for (const expandedKey of state.expanded) {
-        if (Number(expandedKey.split(":")[1]) > depth) state.expanded.delete(expandedKey);
+      if (direction === "outgoing") {
+        const selectedChild = resourceById(state.path[depth + 1]);
+        if (state.path.length > depth + 1 && selectedChild?.category === node.dataset.groupCategory) {
+          state.path = state.path.slice(0, depth + 1);
+          state.focus = parentId;
+          elements.search.value = state.focus;
+          elements.mapTitle.textContent = state.focus;
+          renderDetails();
+        }
+        for (const expandedKey of state.expanded) {
+          if (expandedKey.startsWith("depth:") && Number(expandedKey.split(":")[1]) > depth) {
+            state.expanded.delete(expandedKey);
+          }
+        }
       }
     } else {
       state.expanded.add(key);
@@ -1182,7 +1335,8 @@ function initializeEvents() {
       if (node.dataset.parentResourceId && node.dataset.expanded === "true") {
         const parentId = node.dataset.parentResourceId;
         const depth = Number(node.dataset.parentDepth);
-        const connections = groupConnections(getConnections(parentId, "outgoing"), "outgoing");
+        const direction = node.dataset.direction === "incoming" ? "incoming" : "outgoing";
+        const connections = groupConnections(getConnections(parentId, direction), direction);
         const groupData = connections.find((group) => group.category === node.dataset.groupCategory);
         const deltaX = transform.e - start.x;
         const deltaY = transform.f - start.y;
@@ -1192,6 +1346,7 @@ function initializeEvents() {
               candidate.dataset.resourceId === resource.id
               && candidate.dataset.parentResourceId === parentId
               && Number(candidate.dataset.parentDepth) === depth
+              && candidate.dataset.direction === direction
             );
           if (!member) continue;
           const memberPosition = member.transform.baseVal.consolidate().matrix;
