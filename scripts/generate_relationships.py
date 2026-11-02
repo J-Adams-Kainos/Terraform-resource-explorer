@@ -200,10 +200,47 @@ def provider_resource_index(schema):
     return provider, resources
 
 
+def configurable_fields(block):
+    fields = []
+    for name, attribute in sorted(block.get("attributes", {}).items()):
+        if not (attribute.get("required") or attribute.get("optional")):
+            continue
+        field = {
+            "name": name,
+            "required": bool(attribute.get("required")),
+        }
+        nested_type = attribute.get("nested_type")
+        if nested_type:
+            field["nestedAttribute"] = True
+            field["nestingMode"] = nested_type.get("nesting_mode")
+            field["fields"] = configurable_fields({"attributes": nested_type.get("attributes", {})})
+        fields.append(field)
+
+    for name, nested in sorted(block.get("block_types", {}).items()):
+        nested_fields = configurable_fields(nested.get("block", {}))
+        if not nested_fields:
+            continue
+        fields.append({
+            "name": name,
+            "required": bool(nested.get("min_items")),
+            "nestingMode": nested.get("nesting_mode"),
+            "block": True,
+            "fields": nested_fields,
+        })
+    return fields
+
+
 def resource_nodes(resources, existing_nodes):
     nodes = {node["id"]: node for node in existing_nodes}
-    for resource_id in resources:
+    for resource_id, resource_schema in resources.items():
+        block = resource_schema.get("block", {})
+        required_fields = sorted(
+            name
+            for name, attribute in block.get("attributes", {}).items()
+            if attribute.get("required")
+        )
         if resource_id in nodes:
+            nodes[resource_id]["requiredFields"] = required_fields
             continue
         name, category = relation_name(resource_id)
         nodes[resource_id] = {
@@ -213,6 +250,7 @@ def resource_nodes(resources, existing_nodes):
             "kind": "Resource",
             "url": f"https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/{resource_id.removeprefix('aws_')}",
             "description": f"AWS {name} resource managed by the HashiCorp AWS provider.",
+            "requiredFields": required_fields,
         }
     return nodes
 
@@ -293,6 +331,11 @@ def main():
     parser.add_argument("--modules", type=Path, required=True, help="Directory of cloned public terraform-aws-modules repositories")
     parser.add_argument("--existing", type=Path, required=True, help="Existing curated relationship JSON")
     parser.add_argument("--output", type=Path, required=True, help="Output relationship JSON")
+    parser.add_argument(
+        "--configuration-output",
+        type=Path,
+        help="Output complete provider-configurable field schemas (default: configuration-fields.json beside --output)",
+    )
     args = parser.parse_args()
 
     schema_json = json.loads(args.schema.read_text())
@@ -308,6 +351,10 @@ def main():
             raise RuntimeError(f"Could not identify source revision for {module_dir}: {error}") from error
     observations = discover_edges(provider_resources, args.modules, revisions)
     nodes = resource_nodes(provider_resources, existing.get("resources", []))
+    configuration_fields = {
+        resource_id: configurable_fields(resource_schema.get("block", {}))
+        for resource_id, resource_schema in provider_resources.items()
+    }
     edges = {
         (edge["from"], edge["to"], edge.get("field", "")): edge
         for edge in existing.get("relationships", [])
@@ -373,7 +420,13 @@ def main():
         "relationships": sorted(edges.values(), key=lambda edge: (edge["from"], edge["to"], edge.get("field", ""))),
     }
     args.output.write_text(json.dumps(output, indent=2) + "\n")
+    configuration_output = args.configuration_output or args.output.with_name("configuration-fields.json")
+    configuration_output.parent.mkdir(parents=True, exist_ok=True)
+    configuration_output.write_text(
+        json.dumps(configuration_fields, separators=(",", ":"), ensure_ascii=False) + "\n"
+    )
     print(f"Wrote {len(output['resources'])} managed resources and {len(output['relationships'])} relationships.")
+    print(f"Wrote configurable field schemas for {len(configuration_fields)} resources to {configuration_output}.")
     print(f"Found {len(observations)} resource/field observations in {metadata['moduleRepositoryCount']} public modules.")
 
 

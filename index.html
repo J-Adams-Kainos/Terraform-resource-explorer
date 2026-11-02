@@ -42,6 +42,7 @@
           <button type="submit" class="button button-primary">Explore</button>
         </form>
         <div class="toolbar-actions">
+          <button id="export-terraform" class="button button-secondary" type="button" disabled title="Preview boilerplate for the selected root-to-resource path">Export Terraform</button>
           <button id="save-button" class="button button-secondary" type="button">＋ Save mapping</button>
           <button id="reset-button" class="button button-quiet" type="button">Reset</button>
         </div>
@@ -88,6 +89,9 @@
                 <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
                   <path d="M0,0 L8,4 L0,8 Z" fill="#40c5d8"></path>
                 </marker>
+                <marker id="path-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 Z" fill="#ffb347"></path>
+                </marker>
               </defs>
               <rect class="graph-background" x="0" y="0" width="1000" height="620"></rect>
               <g id="graph-content"></g>
@@ -101,8 +105,8 @@
           </div>
           <div class="map-footer">
             <div class="legend">
-              <span><i class="legend-dot focus-dot"></i>Root and selected path</span>
-              <span><i class="legend-line"></i>Prerequisite → dependant</span>
+              <span><i class="legend-path-dot"></i>Selected path</span>
+              <span><i class="legend-line"></i>Other relationship</span>
             </div>
             <p>Drag bubbles to arrange · Scroll to zoom · Drag the canvas to pan</p>
           </div>
@@ -158,6 +162,19 @@
           <button id="submit-mapping" class="button button-primary" type="submit">Save mapping</button>
         </div>
       </form>
+    </dialog>
+    <dialog id="terraform-preview-dialog" class="mapping-dialog export-dialog" aria-labelledby="terraform-preview-title">
+      <div class="export-dialog-content">
+        <p class="eyebrow">TERRAFORM EXPORT</p>
+        <h2 id="terraform-preview-title">Review generated boilerplate</h2>
+        <p class="export-help">Review or copy this starter configuration. Replace each <code>"REQUIRED"</code> value and verify the configuration before use.</p>
+        <pre id="terraform-preview" class="terraform-preview" aria-label="Generated Terraform configuration" tabindex="0"><code id="terraform-preview-code" class="language-hcl"></code></pre>
+        <div class="dialog-actions">
+          <button id="close-terraform-preview" class="button button-quiet" type="button">Close</button>
+          <button id="copy-terraform" class="button button-secondary" type="button">Copy</button>
+          <button id="download-terraform" class="button button-primary" type="button">Download .tf</button>
+        </div>
+      </div>
     </dialog>
   </body>
 </html>

@@ -11,6 +11,8 @@ const CATEGORY_COLORS = {
 
 const state = {
   resources: [],
+  configurationFields: null,
+  generatedTerraform: "",
   relationships: [],
   focus: null,
   path: [],
@@ -59,7 +61,13 @@ const elements = {
   mappingForm: document.querySelector("#mapping-form"),
   mappingName: document.querySelector("#mapping-name"),
   mappingDialogTitle: document.querySelector("#mapping-dialog-title"),
-  mappingSubmit: document.querySelector("#submit-mapping")
+  mappingSubmit: document.querySelector("#submit-mapping"),
+  exportTerraform: document.querySelector("#export-terraform"),
+  terraformPreviewDialog: document.querySelector("#terraform-preview-dialog"),
+  terraformPreview: document.querySelector("#terraform-preview"),
+  terraformPreviewCode: document.querySelector("#terraform-preview-code"),
+  copyTerraform: document.querySelector("#copy-terraform"),
+  downloadTerraform: document.querySelector("#download-terraform")
 };
 
 function showError(message) {
@@ -219,18 +227,18 @@ function addSvgText(parent, x, y, text, className) {
   return label;
 }
 
-function drawVerticalEdge(from, to, parent) {
+function drawVerticalEdge(from, to, parent, onPath = false) {
   const edge = svgElement("path", {
     d: `M ${from.x} ${from.y} C ${from.x} ${(from.y + to.y) / 2}, ${to.x} ${(from.y + to.y) / 2}, ${to.x} ${to.y}`,
-    class: "graph-edge",
-    "marker-end": "url(#arrow)"
+    class: `graph-edge${onPath ? " path-edge" : ""}`,
+    "marker-end": `url(#${onPath ? "path-arrow" : "arrow"})`
   });
   parent.append(edge);
 }
 
 function createBubble(resource, position, { selected = false, root = false, pathIndex = -1, parentId = "", parentDepth = -1, category = "", minimized = false } = {}) {
   const group = svgElement("g", {
-    class: `graph-node resource-node${selected ? " selected" : ""}${root ? " root-node" : ""}${minimized ? " minimized" : ""}`,
+    class: `graph-node resource-node${selected ? " selected" : ""}${root ? " root-node" : ""}${pathIndex >= 0 ? " on-path" : ""}${minimized ? " minimized" : ""}`,
     transform: `translate(${position.x} ${position.y})`,
     tabindex: "0",
     role: "button",
@@ -269,8 +277,10 @@ function createBubble(resource, position, { selected = false, root = false, path
 function createGroupBubble(groupData, position, parentId, depth, minimized = false) {
   const key = groupKey(parentId, groupData.category, depth);
   const expanded = state.expanded.has(key);
+  const selectedChild = resourceById(state.path[depth + 1]);
+  const onPath = selectedChild?.category === groupData.category;
   const group = svgElement("g", {
-    class: `graph-node category-node group-node${expanded ? " expanded" : ""}${minimized ? " minimized" : ""}`,
+    class: `graph-node category-node group-node${expanded ? " expanded" : ""}${onPath ? " on-path" : ""}${minimized ? " minimized" : ""}`,
     transform: `translate(${position.x} ${position.y})`,
     tabindex: "0",
     role: "button",
@@ -304,6 +314,7 @@ function renderGraph() {
   const collapseButton = document.querySelector("#collapse-groups");
   collapseButton.hidden = state.expanded.size === 0;
   const hasFocus = Boolean(state.focus && resourceById(state.focus));
+  elements.exportTerraform.disabled = !hasFocus;
   elements.graphEmpty.hidden = hasFocus;
   elements.graph.setAttribute("aria-label", hasFocus
     ? `Dependency path from ${state.path[0]} to ${state.focus}`
@@ -389,7 +400,8 @@ function renderGraph() {
       drawVerticalEdge(
         { x: parentPosition.x, y: parentPosition.y + 34 },
         { x: groupPosition.x, y: groupPosition.y - (minimizedGroup ? 23 : 34) },
-        elements.graphContent
+        elements.graphContent,
+        groupData.category === selectedCategory
       );
 
       if (expanded) {
@@ -432,7 +444,8 @@ function renderGraph() {
           drawVerticalEdge(
             { x: groupPosition.x, y: groupPosition.y + (minimizedGroup ? 23 : 34) },
             { x: position.x, y: position.y - (minimized ? 23 : 34) },
-            elements.graphContent
+            elements.graphContent,
+            resource.id === selectedChild
           );
         });
       }
@@ -854,6 +867,165 @@ function updateViewBox() {
   elements.graph.setAttribute("viewBox", `${x} ${y} ${width} ${height}`);
 }
 
+function renderTerraformFields(fields, indentation = "  ") {
+  const lines = [];
+  for (const field of fields || []) {
+    if (Array.isArray(field.fields)) {
+      if (field.block) {
+        lines.push(`${indentation}# ${field.required ? "REQUIRED" : "Optional"} block example`);
+        lines.push(`${indentation}${field.name} {`);
+        lines.push(...renderTerraformFields(field.fields, `${indentation}  `));
+        lines.push(`${indentation}}`);
+      } else {
+        const mode = field.nestingMode;
+        const isCollection = mode === "list" || mode === "set";
+        const isMap = mode === "map";
+        lines.push(`${indentation}${field.name} = ${isCollection ? "[{" : "{"}`);
+        if (isMap) lines.push(`${indentation}  example = {`);
+        const childIndentation = isMap ? `${indentation}    ` : `${indentation}  `;
+        lines.push(...renderTerraformFields(field.fields, childIndentation));
+        if (field.nestingMode === "map") lines.push(`${indentation}  }`);
+        lines.push(`${indentation}${isCollection ? "}]" : "}"}`);
+      }
+      continue;
+    }
+
+    const value = field.required ? '"REQUIRED"' : "null";
+    lines.push(`${indentation}${field.name} = ${value}`);
+  }
+  return lines;
+}
+
+function formatTerraformLines(lines) {
+  const formatted = [...lines];
+  for (let start = 0; start < formatted.length;) {
+    const first = formatted[start].match(/^(\s*)([A-Za-z_][A-Za-z0-9_-]*)\s*=/);
+    if (!first) {
+      start += 1;
+      continue;
+    }
+
+    const indentation = first[1];
+    let end = start;
+    let maxNameLength = 0;
+    while (end < formatted.length) {
+      const assignment = formatted[end].match(/^(\s*)([A-Za-z_][A-Za-z0-9_-]*)\s*=/);
+      if (!assignment || assignment[1] !== indentation) break;
+      maxNameLength = Math.max(maxNameLength, assignment[2].length);
+      end += 1;
+    }
+
+    for (let index = start; index < end; index += 1) {
+      formatted[index] = formatted[index].replace(
+        /^(\s*)([A-Za-z_][A-Za-z0-9_-]*)\s*=/,
+        (_, prefix, name) => `${prefix}${name.padEnd(maxNameLength)} =`
+      );
+    }
+    start = end;
+  }
+  return formatted;
+}
+
+function escapeHtml(text) {
+  return text.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    "\"": "&quot;",
+    "'": "&#39;"
+  })[character]);
+}
+
+function highlightTerraform(source) {
+  const tokenPattern = /#[^\n]*|"(?:\\.|[^"\\])*"|\b(?:resource|data|module|variable|locals|terraform|provider|output|dynamic|for_each|depends_on|for|in|if|else)\b|\b(?:true|false|null)\b|\b\d+(?:\.\d+)?\b|[A-Za-z_][A-Za-z0-9_-]*(?=\s*=)|[{}[\](),.]|[A-Za-z_][A-Za-z0-9_-]*/g;
+  const classes = (token) => {
+    if (token.startsWith("#")) return "hcl-comment";
+    if (token.startsWith("\"")) return "hcl-string";
+    if (/^(resource|data|module|variable|locals|terraform|provider|output|dynamic|for_each|depends_on|for|in|if|else)$/.test(token)) return "hcl-keyword";
+    if (/^(true|false|null)$/.test(token)) return "hcl-literal";
+    if (/^\d/.test(token)) return "hcl-number";
+    if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(token)) return "hcl-identifier";
+    return "hcl-punctuation";
+  };
+  let html = "";
+  let previousIndex = 0;
+  for (const match of source.matchAll(tokenPattern)) {
+    const index = match.index;
+    const token = match[0];
+    html += escapeHtml(source.slice(previousIndex, index));
+    html += `<span class="${classes(token)}">${escapeHtml(token)}</span>`;
+    previousIndex = index + token.length;
+  }
+  return html + escapeHtml(source.slice(previousIndex));
+}
+
+async function exportTerraform() {
+  const pathResources = state.path.map(resourceById);
+  if (pathResources.length === 0 || pathResources.some((resource) => !resource)) {
+    showNotice("Select a valid resource path before exporting Terraform.");
+    return;
+  }
+
+  if (!state.configurationFields) {
+    const response = await fetch("./data/configuration-fields.json");
+    if (!response.ok) {
+      throw new Error(`Could not load resource field schemas (${response.status} ${response.statusText}).`);
+    }
+    state.configurationFields = await response.json();
+  }
+
+  const lines = [
+    "# Generated from the selected resource path.",
+    "# Replace each \"REQUIRED\" placeholder before planning or applying.",
+    "# Optional null values are included as editable examples.",
+    "# Schema source: HashiCorp AWS provider v6.0.0.",
+    ""
+  ];
+  for (const resource of pathResources) {
+    const fields = state.configurationFields[resource.id];
+    if (!Array.isArray(fields)) {
+      throw new Error(`No configurable field schema was found for ${resource.id}.`);
+    }
+    lines.push(`resource "${resource.id}" "${resource.id}_example" {`);
+    lines.push(...renderTerraformFields(fields));
+    lines.push("}", "");
+  }
+
+  state.generatedTerraform = `${formatTerraformLines(lines).join("\n").trimEnd()}\n`;
+  elements.terraformPreviewCode.innerHTML = highlightTerraform(state.generatedTerraform);
+  elements.terraformPreviewDialog.showModal();
+  elements.terraformPreview.focus();
+}
+
+function downloadTerraform() {
+  const pathResources = state.path.map(resourceById);
+  if (pathResources.length === 0 || pathResources.some((resource) => !resource)) {
+    showNotice("Select a valid resource path before downloading Terraform.");
+    elements.terraformPreviewDialog.close();
+    return;
+  }
+  const blob = new Blob([state.generatedTerraform], { type: "text/plain;charset=utf-8" });
+  const downloadUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = downloadUrl;
+  link.download = `${pathResources[0].id}-to-${pathResources[pathResources.length - 1].id}.tf`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 0);
+  elements.terraformPreviewDialog.close();
+  showNotice(`Downloaded Terraform boilerplate for ${pathResources.length} selected resource${pathResources.length === 1 ? "" : "s"}.`);
+}
+
+async function copyTerraform() {
+  try {
+    await navigator.clipboard.writeText(state.generatedTerraform);
+    showNotice("Terraform boilerplate copied to the clipboard.");
+  } catch (error) {
+    showError(`Could not copy Terraform boilerplate to the clipboard (${error.message}). Select the preview text and copy it manually.`);
+  }
+}
+
 function setZoom(nextZoom) {
   state.userZoom = Math.max(0.25, Math.min(1.7, nextZoom));
   if (state.zoomFrame !== null) return;
@@ -885,6 +1057,19 @@ function saveGraphLayout() {
 }
 
 function initializeEvents() {
+  elements.exportTerraform.addEventListener("click", async () => {
+    try {
+      await exportTerraform();
+    } catch (error) {
+      showError(`Could not prepare Terraform boilerplate (${error.message}).`);
+    }
+  });
+  elements.copyTerraform.addEventListener("click", copyTerraform);
+  elements.downloadTerraform.addEventListener("click", downloadTerraform);
+  document.querySelector("#close-terraform-preview").addEventListener("click", () => {
+    elements.terraformPreviewDialog.close();
+  });
+
   elements.searchForm.addEventListener("submit", (event) => {
     event.preventDefault();
     const resource = findResource(elements.search.value);
