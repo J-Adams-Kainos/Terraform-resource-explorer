@@ -13,9 +13,13 @@ const state = {
   resources: [],
   configurationFields: null,
   generatedTerraform: "",
+  imageExportLayout: "top-down",
+  previewScrollY: null,
   relationships: [],
   focus: null,
   path: [],
+  selectedEdges: [],
+  cleanMode: false,
   history: [],
   saved: [],
   expanded: new Set(),
@@ -63,11 +67,17 @@ const elements = {
   mappingDialogTitle: document.querySelector("#mapping-dialog-title"),
   mappingSubmit: document.querySelector("#submit-mapping"),
   exportTerraform: document.querySelector("#export-terraform"),
+  exportMapImage: document.querySelector("#export-map-image"),
+  cleanMode: document.querySelector("#clean-mode"),
   terraformPreviewDialog: document.querySelector("#terraform-preview-dialog"),
   terraformPreview: document.querySelector("#terraform-preview"),
   terraformPreviewCode: document.querySelector("#terraform-preview-code"),
   copyTerraform: document.querySelector("#copy-terraform"),
-  downloadTerraform: document.querySelector("#download-terraform")
+  downloadTerraform: document.querySelector("#download-terraform"),
+  mapImageDialog: document.querySelector("#map-image-dialog"),
+  mapImageLayout: document.querySelector("#map-image-layout"),
+  mapImagePreview: document.querySelector("#map-image-preview"),
+  mapImageSummary: document.querySelector("#map-image-summary")
 };
 
 function showError(message) {
@@ -108,6 +118,38 @@ function resourceById(id) {
   return state.resources.find((resource) => resource.id === id);
 }
 
+function selectedEdgeExists(from, to) {
+  return state.selectedEdges.some((edge) => edge.from === from && edge.to === to);
+}
+
+function addSelectedEdge(from, to) {
+  if (!selectedEdgeExists(from, to)) state.selectedEdges.push({ from, to });
+}
+
+function selectedPathEdges(path) {
+  return path.slice(1).map((to, index) => ({ from: path[index], to }));
+}
+
+function getSavedSelectedEdges(mapping, path) {
+  const edges = [
+    ...(Array.isArray(mapping.selectedEdges) ? mapping.selectedEdges : []),
+    ...selectedPathEdges(path)
+  ];
+  const valid = edges.every((edge) =>
+    edge
+    && resourceById(edge.from)
+    && resourceById(edge.to)
+    && state.relationships.some((relationship) => relationship.from === edge.from && relationship.to === edge.to)
+  );
+  if (!valid) {
+    showError(`The saved mapping "${mapping.name}" contains an invalid selected branch.`);
+    return null;
+  }
+  return edges.filter((edge, index, all) =>
+    all.findIndex((candidate) => candidate.from === edge.from && candidate.to === edge.to) === index
+  );
+}
+
 function setFocus(id, addHistory = true) {
   const resource = resourceById(id);
   if (!resource) {
@@ -117,6 +159,7 @@ function setFocus(id, addHistory = true) {
 
   state.focus = id;
   state.path = [id];
+  state.selectedEdges = [];
   state.expanded.clear();
   for (const group of groupConnections(getConnections(id, "incoming"), "incoming")) {
     state.expanded.add(upstreamGroupKey(id, group.category));
@@ -142,6 +185,7 @@ function selectPrerequisite(id, dependentId) {
   }
 
   const dependent = resourceById(dependentId);
+  addSelectedEdge(id, dependentId);
   state.path = [id, ...state.path];
 
   const shiftedExpanded = new Set();
@@ -188,21 +232,19 @@ function selectDependent(id, parentId) {
     return;
   }
 
+  const dependent = resourceById(id);
+  const isAdditionalBranch = !selectedEdgeExists(parentId, id)
+    && state.selectedEdges.some((edge) => edge.from === parentId);
+  addSelectedEdge(parentId, id);
   const existingIndex = state.path.indexOf(id);
-  let retainedDepth = parentIndex;
   if (existingIndex >= 0 && existingIndex <= parentIndex) {
     state.path = state.path.slice(0, existingIndex + 1);
     state.focus = id;
-    retainedDepth = existingIndex;
   } else {
     state.path = [...state.path.slice(0, parentIndex + 1), id];
     state.focus = id;
     const category = resourceById(id)?.category;
     if (category) state.expanded.add(groupKey(parentId, category, parentIndex));
-  }
-  for (const key of state.expanded) {
-    const depth = Number(key.split(":")[1]);
-    if (depth > retainedDepth) state.expanded.delete(key);
   }
 
   addHistoryEntry(id);
@@ -211,6 +253,94 @@ function selectDependent(id, parentId) {
   renderGraph();
   renderDetails();
   updateSelectedSavedMapping();
+  if (isAdditionalBranch) showNotice(`Added ${id} as another branch from ${parentId}.`);
+}
+
+function deselectResource(id) {
+  const pathIndex = state.path.indexOf(id);
+  const rootId = state.path[0];
+  if (!rootId) return;
+
+  const edges = [
+    ...state.selectedEdges,
+    ...selectedPathEdges(state.path)
+  ].filter((edge, index, all) =>
+    all.findIndex((candidate) => candidate.from === edge.from && candidate.to === edge.to) === index
+  ).filter((edge) => edge.from !== id && edge.to !== id);
+  const path = pathIndex >= 0 ? state.path.slice(0, pathIndex) : [...state.path];
+  const reachable = new Set(path.length > 0 ? [rootId] : []);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const edge of edges) {
+      if (reachable.has(edge.from) && !reachable.has(edge.to)) {
+        reachable.add(edge.to);
+        changed = true;
+      }
+    }
+  }
+
+  state.path = path.filter((resourceId) => reachable.has(resourceId));
+  state.selectedEdges = edges.filter((edge) => reachable.has(edge.from) && reachable.has(edge.to));
+  state.focus = pathIndex >= 0
+    ? state.path.at(-1) || null
+    : state.path.includes(state.focus) ? state.focus : state.path.at(-1) || null;
+  state.expanded = new Set([...state.expanded].filter((key) => {
+    const parts = key.split(":");
+    const parentId = parts[0] === "depth" ? parts[2] : parts[0] === "upstream" ? parts[1] : "";
+    return parentId && reachable.has(parentId);
+  }));
+  if (state.focus) {
+    elements.search.value = state.focus;
+    elements.mapTitle.textContent = state.focus;
+  } else {
+    elements.search.value = "";
+    elements.mapTitle.textContent = "Select a resource to begin";
+    state.positions = {};
+  }
+  renderGraph();
+  renderDetails();
+  updateSelectedSavedMapping();
+}
+
+function activateSelectedResource(id) {
+  const rootId = state.path[0];
+  if (!rootId) return;
+
+  const edges = [
+    ...state.selectedEdges,
+    ...selectedPathEdges(state.path)
+  ].filter((edge, index, all) =>
+    all.findIndex((candidate) => candidate.from === edge.from && candidate.to === edge.to) === index
+  );
+  const queue = [{ id: rootId, path: [rootId] }];
+  const visited = new Set([rootId]);
+  let selectedPath = null;
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current.id === id) {
+      selectedPath = current.path;
+      break;
+    }
+    for (const edge of edges) {
+      if (edge.from !== current.id || visited.has(edge.to)) continue;
+      visited.add(edge.to);
+      queue.push({ id: edge.to, path: [...current.path, edge.to] });
+    }
+  }
+  if (!selectedPath) {
+    showNotice(`${id} is not connected to the selected graph.`);
+    return;
+  }
+
+  state.path = selectedPath;
+  state.focus = id;
+  elements.search.value = id;
+  elements.mapTitle.textContent = id;
+  addHistoryEntry(id);
+  renderGraph();
+  renderDetails();
+  saveGraphLayout();
 }
 
 function findResource(query) {
@@ -284,13 +414,13 @@ function drawVerticalEdge(from, to, parent, onPath = false) {
   parent.append(edge);
 }
 
-function createBubble(resource, position, { selected = false, root = false, pathIndex = -1, parentId = "", parentDepth = -1, category = "", minimized = false, direction = "outgoing" } = {}) {
+function createBubble(resource, position, { selected = false, root = false, pathIndex = -1, parentId = "", parentDepth = -1, category = "", minimized = false, direction = "outgoing", onPath = false } = {}) {
+  const isSelected = pathIndex >= 0 || onPath;
   const group = svgElement("g", {
-    class: `graph-node resource-node${selected ? " selected" : ""}${root ? " root-node" : ""}${pathIndex >= 0 ? " on-path" : ""}${minimized ? " minimized" : ""}`,
+    class: `graph-node resource-node${selected ? " selected" : ""}${root ? " root-node" : ""}${pathIndex >= 0 || onPath ? " on-path" : ""}${minimized ? " minimized" : ""}`,
     transform: `translate(${position.x} ${position.y})`,
-    tabindex: "0",
-    role: "button",
-    "aria-label": `${direction === "incoming" ? "Potential prerequisite, " : ""}${root ? "Root resource, " : ""}${resource.id}, ${resource.name}`,
+    role: "group",
+    "aria-label": `${direction === "incoming" ? "Potential prerequisite, " : ""}${root ? "Root resource, " : ""}${resource.id}, ${resource.name}${isSelected ? ", selected" : ""}`,
     "data-resource-id": resource.id,
     "data-position-key": pathIndex >= 0
       ? `path:${pathIndex}:${resource.id}`
@@ -312,14 +442,51 @@ function createBubble(resource, position, { selected = false, root = false, path
   }));
   if (minimized) {
     addSvgText(group, 0, 4, resource.id, "bubble-id minimized-label");
-    return group;
+  } else {
+    group.append(svgElement("circle", {
+      cx: -69, cy: -12, r: 4, class: "bubble-indicator",
+      style: `--bubble-color:${color}`
+    }));
+    addSvgText(group, -59, -8, resource.id, "bubble-id");
+    addSvgText(group, -69, 15, resource.name, "bubble-name");
   }
-  group.append(svgElement("circle", {
-    cx: -69, cy: -12, r: 4, class: "bubble-indicator",
-    style: `--bubble-color:${color}`
-  }));
-  addSvgText(group, -59, -8, resource.id, "bubble-id");
-  addSvgText(group, -69, 15, resource.name, "bubble-name");
+
+  const actionWidth = width / 4;
+  const actionStart = width / 2 - actionWidth;
+  const bodyControl = svgElement("rect", {
+    x: String(-width / 2),
+    y: String(-height / 2),
+    width: String(width - actionWidth),
+    height: String(height),
+    rx: String(height / 2),
+    class: "node-main-control",
+    fill: "transparent",
+    tabindex: "0",
+    role: "button",
+    "aria-label": `${resource.id}, ${resource.name}, ${isSelected ? "selected; show this branch" : "not selected; select this resource"}`,
+    "data-node-action": "main"
+  });
+  group.append(bodyControl);
+  if (isSelected) {
+    const action = svgElement("g", {
+      class: "node-deselect-control",
+      tabindex: "0",
+      role: "button",
+      "aria-label": `Deselect ${resource.id}`,
+      "data-node-action": "deselect"
+    });
+    action.append(svgElement("path", {
+      d: `M ${actionStart} ${-height / 2} H ${width / 2 - height / 2} A ${height / 2} ${height / 2} 0 0 1 ${width / 2 - height / 2} ${height / 2} H ${actionStart} Z`,
+      class: "node-deselect-bg"
+    }));
+    const iconCenterX = actionStart + actionWidth / 2;
+    const iconHalfSize = minimized ? 4 : 6;
+    action.append(svgElement("path", {
+      d: `M ${iconCenterX - iconHalfSize} ${-iconHalfSize} L ${iconCenterX + iconHalfSize} ${iconHalfSize} M ${iconCenterX + iconHalfSize} ${-iconHalfSize} L ${iconCenterX - iconHalfSize} ${iconHalfSize}`,
+      class: "node-deselect-icon"
+    }));
+    group.append(action);
+  }
   return group;
 }
 
@@ -328,8 +495,11 @@ function createGroupBubble(groupData, position, parentId, depth, minimized = fal
     ? upstreamGroupKey(parentId, groupData.category)
     : groupKey(parentId, groupData.category, depth);
   const expanded = state.expanded.has(key);
-  const selectedChild = resourceById(state.path[depth + 1]);
-  const onPath = direction === "outgoing" && selectedChild?.category === groupData.category;
+  const onPath = direction === "outgoing"
+    ? state.selectedEdges.some((edge) =>
+      edge.from === parentId && resourceById(edge.to)?.category === groupData.category
+    )
+    : false;
   const group = svgElement("g", {
     class: `graph-node category-node group-node${expanded ? " expanded" : ""}${onPath ? " on-path" : ""}${minimized ? " minimized" : ""}`,
     transform: `translate(${position.x} ${position.y})`,
@@ -361,15 +531,141 @@ function createGroupBubble(groupData, position, parentId, depth, minimized = fal
   return group;
 }
 
+function selectedGraph() {
+  const edges = [
+    ...state.selectedEdges,
+    ...selectedPathEdges(state.path)
+  ].filter((edge, index, all) =>
+    all.findIndex((candidate) => candidate.from === edge.from && candidate.to === edge.to) === index
+  );
+  const nodes = [...new Set([
+    ...state.path,
+    ...edges.flatMap((edge) => [edge.from, edge.to])
+  ])].filter((id) => resourceById(id));
+  const validEdges = edges.filter((edge) =>
+    nodes.includes(edge.from)
+    && nodes.includes(edge.to)
+    && state.relationships.some((relationship) => relationship.from === edge.from && relationship.to === edge.to)
+  );
+  const parents = new Map(nodes.map((id) => [id, []]));
+  const children = new Map(nodes.map((id) => [id, []]));
+  for (const edge of validEdges) {
+    parents.get(edge.to).push(edge.from);
+    children.get(edge.from).push(edge.to);
+  }
+
+  const roots = nodes.filter((id) => parents.get(id).length === 0);
+  const root = roots.includes(state.path[0]) ? state.path[0] : roots[0] || state.path[0];
+  const depth = new Map();
+  const pending = nodes.map((id) => ({ id, parentCount: parents.get(id).length }));
+  for (const id of roots.length > 0 ? roots : [root]) depth.set(id, 0);
+  const ready = pending.filter((item) => item.parentCount === 0).map((item) => item.id);
+
+  while (ready.length > 0) {
+    const parentId = ready.shift();
+    for (const childId of children.get(parentId)) {
+      depth.set(childId, Math.max(depth.get(childId) ?? 0, (depth.get(parentId) ?? 0) + 1));
+      const child = pending.find((item) => item.id === childId);
+      child.parentCount -= 1;
+      if (child.parentCount === 0) ready.push(childId);
+    }
+  }
+
+  for (const id of nodes) {
+    if (depth.has(id)) continue;
+    depth.set(id, Math.max(0, ...parents.get(id).map((parentId) => (depth.get(parentId) ?? 0) + 1)));
+  }
+  return { nodes, edges: validEdges, root, depth };
+}
+
+function renderCleanGraph() {
+  const graph = selectedGraph();
+  const levels = new Map();
+  for (const id of graph.nodes) {
+    const level = graph.depth.get(id) ?? 0;
+    if (!levels.has(level)) levels.set(level, []);
+    levels.get(level).push(id);
+  }
+
+  const positions = new Map();
+  const nodeBounds = [];
+  for (const [level, ids] of [...levels.entries()].sort(([first], [second]) => first - second)) {
+    const gap = 34;
+    const rowWidth = ids.length * 176 + Math.max(0, ids.length - 1) * gap;
+    let cursorX = 500 - rowWidth / 2;
+    for (const id of ids) {
+      const position = getPosition(`clean:${id}`, { x: cursorX + 88, y: 80 + level * 150 });
+      positions.set(id, position);
+      nodeBounds.push({ x: position.x, y: position.y, width: 176, height: 68 });
+      cursorX += 176 + gap;
+    }
+  }
+
+  for (const edge of graph.edges) {
+    const from = positions.get(edge.from);
+    const to = positions.get(edge.to);
+    if (!from || !to) continue;
+    drawVerticalEdge(
+      { x: from.x, y: from.y + 34 },
+      { x: to.x, y: to.y - 34 },
+      elements.graphContent,
+      true
+    );
+  }
+
+  for (const id of graph.nodes) {
+    const position = positions.get(id);
+    const pathIndex = state.path.indexOf(id);
+    const node = createBubble(resourceById(id), position, {
+      root: id === graph.root,
+      selected: id === state.focus,
+      pathIndex,
+      parentId: graph.depth.get(id) > 0 ? graph.nodes.find((candidate) =>
+        graph.edges.some((edge) => edge.from === candidate && edge.to === id)
+      ) || "" : "",
+      parentDepth: (graph.depth.get(id) ?? 0) - 1,
+      onPath: graph.edges.some((edge) => edge.to === id),
+      direction: "outgoing"
+    });
+    node.dataset.cleanMode = "true";
+    node.dataset.positionKey = `clean:${id}`;
+    elements.graphContent.append(node);
+  }
+
+  state.graphBounds = {
+    minX: Math.min(...nodeBounds.map((bounds) => bounds.x - bounds.width / 2)),
+    maxX: Math.max(...nodeBounds.map((bounds) => bounds.x + bounds.width / 2)),
+    minY: Math.min(...nodeBounds.map((bounds) => bounds.y - bounds.height / 2)),
+    maxY: Math.max(...nodeBounds.map((bounds) => bounds.y + bounds.height / 2))
+  };
+  state.fitZoom = Math.min(
+    1,
+    VIEWBOX.width / (state.graphBounds.maxX - state.graphBounds.minX + 40),
+    VIEWBOX.height / (state.graphBounds.maxY - state.graphBounds.minY + 40)
+  );
+  if (state.fitNextRender) {
+    state.zoom = Math.min(state.userZoom, state.fitZoom);
+    state.userZoom = state.zoom;
+    state.fitNextRender = false;
+  }
+  elements.graph.setAttribute("aria-label", `Clean view of ${graph.nodes.length} selected resources and ${graph.edges.length} selected branches`);
+  updateViewBox();
+}
+
 function renderGraph() {
   elements.graphContent.replaceChildren();
   const collapseButton = document.querySelector("#collapse-groups");
   collapseButton.hidden = state.expanded.size === 0;
   const hasFocus = Boolean(state.focus && resourceById(state.focus));
   elements.exportTerraform.disabled = !hasFocus;
+  elements.exportMapImage.disabled = !hasFocus;
+  elements.cleanMode.disabled = !hasFocus;
+  elements.cleanMode.setAttribute("aria-pressed", String(state.cleanMode));
+  elements.cleanMode.setAttribute("aria-label", state.cleanMode ? "Show full graph" : "Show clean graph");
+  elements.cleanMode.title = state.cleanMode ? "Show full graph" : "Show selected resources only";
   elements.graphEmpty.hidden = hasFocus;
   elements.graph.setAttribute("aria-label", hasFocus
-    ? `Dependency path from ${state.path[0]} to ${state.focus}`
+    ? `Dependency graph rooted at ${state.path[0]} with current focus ${state.focus}`
     : "Select a resource to begin exploring relationships");
 
   if (!hasFocus) {
@@ -378,6 +674,11 @@ function renderGraph() {
     state.userZoom = 1;
     state.zoom = 1;
     updateViewBox();
+    return;
+  }
+
+  if (state.cleanMode) {
+    renderCleanGraph();
     return;
   }
 
@@ -507,11 +808,21 @@ function renderGraph() {
     const layouts = groups.map((groupData) => {
       const key = groupKey(parentId, groupData.category, depth);
       const expanded = state.expanded.has(key);
+      const selectedMembers = new Set(
+        state.selectedEdges
+          .filter((edge) => edge.from === parentId)
+          .map((edge) => edge.to)
+      );
+      const hasSelectedBranch = groupData.members.some((resource) => selectedMembers.has(resource.id));
       const minimized = state.path.length > depth + 1
         && depth === state.path.length - 2
-        && groupData.category !== selectedCategory;
+        && groupData.category !== selectedCategory
+        && !hasSelectedBranch;
       const memberWidths = groupData.members.map((resource) =>
-        state.path.length > depth + 1 && depth === state.path.length - 2 && resource.id !== selectedChild
+        state.path.length > depth + 1
+        && depth === state.path.length - 2
+        && resource.id !== selectedChild
+        && !selectedMembers.has(resource.id)
           ? 112
           : 176
       );
@@ -535,7 +846,8 @@ function renderGraph() {
         parentId,
         depth,
         expanded,
-        minimized: minimizedGroup
+        minimized: minimizedGroup,
+        onPath: groupData.members.some((resource) => selectedEdgeExists(parentId, resource.id))
       };
       descriptors.push(groupDescriptor);
       nodeBounds.push({ x: groupPosition.x, y: groupPosition.y, width: minimizedGroup ? 128 : 182, height: minimizedGroup ? 46 : 68 });
@@ -543,7 +855,7 @@ function renderGraph() {
         { x: parentPosition.x, y: parentPosition.y + 34 },
         { x: groupPosition.x, y: groupPosition.y - (minimizedGroup ? 23 : 34) },
         elements.graphContent,
-        groupData.category === selectedCategory
+        groupData.members.some((resource) => selectedEdgeExists(parentId, resource.id))
       );
 
       if (expanded) {
@@ -575,7 +887,8 @@ function renderGraph() {
             category: groupData.category,
             pathIndex,
             selected: pathIndex >= 0 && pathIndex === state.path.length - 1,
-            minimized
+            minimized,
+            onPath: selectedEdgeExists(parentId, resource.id)
           });
           nodeBounds.push({
             x: position.x,
@@ -587,7 +900,7 @@ function renderGraph() {
             { x: groupPosition.x, y: groupPosition.y + (minimizedGroup ? 23 : 34) },
             { x: position.x, y: position.y - (minimized ? 23 : 34) },
             elements.graphContent,
-            resource.id === selectedChild
+            selectedEdgeExists(parentId, resource.id)
           );
         });
       }
@@ -830,6 +1143,7 @@ function submitMapping(event) {
     name: normalizedName,
     focus: state.focus,
     path: [...state.path],
+    selectedEdges: [...state.selectedEdges],
     expanded: [...state.expanded],
     positions: { ...state.positions },
     updatedAt: new Date().toISOString()
@@ -906,9 +1220,12 @@ function selectSavedMapping(id) {
   }
   const path = getSavedPath(mapping);
   if (!path) return;
+  const selectedEdges = getSavedSelectedEdges(mapping, path);
+  if (!selectedEdges) return;
   state.selectedSavedId = mapping.id;
   state.focus = mapping.focus;
   state.path = path;
+  state.selectedEdges = selectedEdges;
   state.expanded = new Set(mapping.expanded || []);
   state.positions = { ...(mapping.positions || {}) };
   state.userZoom = 1;
@@ -945,6 +1262,7 @@ function updateSelectedSavedMapping() {
   if (!mapping || state.mode !== "saved") return;
   mapping.focus = state.focus;
   mapping.path = [...state.path];
+  mapping.selectedEdges = [...state.selectedEdges];
   mapping.expanded = [...state.expanded];
   mapping.positions = { ...state.positions };
   mapping.updatedAt = new Date().toISOString();
@@ -972,17 +1290,23 @@ function setMode(mode) {
         if (!path) {
           state.selectedSavedId = null;
         } else {
-          state.focus = mapping.focus;
-          state.path = path;
-          state.expanded = new Set(mapping.expanded || []);
-          state.positions = { ...(mapping.positions || {}) };
-          state.userZoom = 1;
-          state.panX = 0;
-          state.panY = 0;
-          elements.search.value = mapping.focus;
-          elements.mapTitle.textContent = mapping.focus;
-          renderGraph();
-          renderDetails();
+          const selectedEdges = getSavedSelectedEdges(mapping, path);
+          if (!selectedEdges) {
+            state.selectedSavedId = null;
+          } else {
+            state.focus = mapping.focus;
+            state.path = path;
+            state.selectedEdges = selectedEdges;
+            state.expanded = new Set(mapping.expanded || []);
+            state.positions = { ...(mapping.positions || {}) };
+            state.userZoom = 1;
+            state.panX = 0;
+            state.panY = 0;
+            elements.search.value = mapping.focus;
+            elements.mapTitle.textContent = mapping.focus;
+            renderGraph();
+            renderDetails();
+          }
         }
       }
     }
@@ -1032,7 +1356,8 @@ function renderTerraformFields(fields, indentation = "  ") {
       continue;
     }
 
-    const value = field.required ? '"REQUIRED"' : "null";
+    const type = field.type || "dynamic";
+    const value = field.required ? `"REQUIRED (${type})"` : `"<${type}>"`;
     lines.push(`${indentation}${field.name} = ${value}`);
   }
   return lines;
@@ -1101,10 +1426,211 @@ function highlightTerraform(source) {
   return html + escapeHtml(source.slice(previousIndex));
 }
 
+function getSelectedResources() {
+  const selectedIds = [
+    ...state.path,
+    ...state.selectedEdges.flatMap((edge) => [edge.from, edge.to])
+  ].filter((id, index, all) => all.indexOf(id) === index);
+  return selectedIds.map(resourceById);
+}
+
+function lockPageScroll() {
+  if (state.previewScrollY !== null) return;
+  state.previewScrollY = window.scrollY;
+  document.body.style.setProperty("--preview-scroll-offset", `${-state.previewScrollY}px`);
+  document.body.classList.add("preview-open");
+}
+
+function unlockPageScroll() {
+  if (state.previewScrollY === null) return;
+  const scrollY = state.previewScrollY;
+  state.previewScrollY = null;
+  document.body.classList.remove("preview-open");
+  document.body.style.removeProperty("--preview-scroll-offset");
+  window.scrollTo(0, scrollY);
+}
+
+function createMapImageSvg(graph, layout) {
+  const nodeWidth = 250;
+  const nodeHeight = 82;
+  const margin = 52;
+  const horizontalGap = layout === "left-to-right" ? 130 : 42;
+  const verticalGap = layout === "top-down" ? 78 : 42;
+  const levels = new Map();
+  for (const id of graph.nodes) {
+    const level = graph.depth.get(id) ?? 0;
+    if (!levels.has(level)) levels.set(level, []);
+    levels.get(level).push(id);
+  }
+  const orderedLevels = [...levels.entries()].sort(([first], [second]) => first - second);
+  const maxLevelCount = Math.max(1, ...orderedLevels.map(([, ids]) => ids.length));
+  const widestLevel = maxLevelCount * nodeWidth + Math.max(0, maxLevelCount - 1) * horizontalGap;
+  const tallestLevel = maxLevelCount * nodeHeight + Math.max(0, maxLevelCount - 1) * verticalGap;
+  const width = Math.ceil(layout === "top-down"
+    ? widestLevel + margin * 2
+    : orderedLevels.length * nodeWidth + Math.max(0, orderedLevels.length - 1) * horizontalGap + margin * 2);
+  const height = Math.ceil(layout === "top-down"
+    ? orderedLevels.length * nodeHeight + Math.max(0, orderedLevels.length - 1) * verticalGap + margin * 2
+    : tallestLevel + margin * 2);
+  const positions = new Map();
+
+  orderedLevels.forEach(([level, ids], levelIndex) => {
+    if (layout === "top-down") {
+      const rowWidth = ids.length * nodeWidth + Math.max(0, ids.length - 1) * horizontalGap;
+      let x = (width - rowWidth) / 2 + nodeWidth / 2;
+      const y = margin + levelIndex * (nodeHeight + verticalGap) + nodeHeight / 2;
+      for (const id of ids) {
+        positions.set(id, { x, y });
+        x += nodeWidth + horizontalGap;
+      }
+      return;
+    }
+
+    const columnHeight = ids.length * nodeHeight + Math.max(0, ids.length - 1) * verticalGap;
+    let y = (height - columnHeight) / 2 + nodeHeight / 2;
+    const x = margin + levelIndex * (nodeWidth + horizontalGap) + nodeWidth / 2;
+    for (const id of ids) {
+      positions.set(id, { x, y });
+      y += nodeHeight + verticalGap;
+    }
+  });
+
+  const svg = svgElement("svg", {
+    xmlns: "http://www.w3.org/2000/svg",
+    width: String(width),
+    height: String(height),
+    viewBox: `0 0 ${width} ${height}`,
+    role: "img",
+    "aria-label": `Selected resource map, ${layout === "top-down" ? "top-down" : "left-to-right"} layout`
+  });
+  svg.append(svgElement("style", {}, `
+    text { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .map-bg { fill: #091827; }
+    .map-edge { fill: none; stroke: #ffb347; stroke-width: 3; }
+    .map-node { fill: #10243a; stroke-width: 2; }
+    .map-node.root { stroke: #40c5d8; }
+    .map-node.selected { stroke: #ffb347; stroke-width: 3; }
+    .map-id { fill: #dceaf5; font-size: 15px; font-weight: 650; }
+    .map-name { fill: #9db4c9; font-size: 12px; }
+    .map-title { fill: #ffcb82; font-size: 11px; font-weight: 600; }
+  `));
+  const defs = svgElement("defs");
+  const marker = svgElement("marker", {
+    id: "map-arrow",
+    markerWidth: "9",
+    markerHeight: "9",
+    refX: "7",
+    refY: "4.5",
+    orient: "auto",
+    markerUnits: "strokeWidth"
+  });
+  marker.append(svgElement("path", { d: "M0,0 L9,4.5 L0,9 Z", fill: "#ffb347" }));
+  defs.append(marker);
+  svg.append(defs);
+  svg.append(svgElement("rect", { class: "map-bg", width: String(width), height: String(height) }));
+  svg.append(svgElement("text", { x: String(margin), y: "30", class: "map-title" }, "SELECTED RESOURCE MAP"));
+
+  for (const edge of graph.edges) {
+    const from = positions.get(edge.from);
+    const to = positions.get(edge.to);
+    if (!from || !to) continue;
+    const path = layout === "top-down"
+      ? `M ${from.x} ${from.y + nodeHeight / 2} C ${from.x} ${(from.y + to.y) / 2}, ${to.x} ${(from.y + to.y) / 2}, ${to.x} ${to.y - nodeHeight / 2}`
+      : `M ${from.x + nodeWidth / 2} ${from.y} C ${(from.x + to.x) / 2} ${from.y}, ${(from.x + to.x) / 2} ${to.y}, ${to.x - nodeWidth / 2} ${to.y}`;
+    svg.append(svgElement("path", {
+      d: path,
+      class: "map-edge",
+      "marker-end": "url(#map-arrow)"
+    }));
+  }
+
+  for (const id of graph.nodes) {
+    const resource = resourceById(id);
+    const position = positions.get(id);
+    const classes = ["map-node"];
+    if (id === graph.root) classes.push("root");
+    if (id === state.focus) classes.push("selected");
+    const group = svgElement("g", {
+      class: "map-resource",
+      transform: `translate(${position.x} ${position.y})`
+    });
+    group.append(svgElement("title", {}, `${resource.id}: ${resource.name}`));
+    group.append(svgElement("rect", {
+      class: classes.join(" "),
+      x: String(-nodeWidth / 2),
+      y: String(-nodeHeight / 2),
+      width: String(nodeWidth),
+      height: String(nodeHeight),
+      rx: "18",
+      stroke: CATEGORY_COLORS[resource.category] || "#40c5d8"
+    }));
+    const idLabelAttributes = {
+      class: "map-id",
+      x: String(-nodeWidth / 2 + 17),
+      y: "-5"
+    };
+    if (resource.id.length * 9 > nodeWidth - 34) {
+      idLabelAttributes.textLength = String(nodeWidth - 34);
+      idLabelAttributes.lengthAdjust = "spacingAndGlyphs";
+    }
+    group.append(svgElement("text", idLabelAttributes, resource.id));
+    group.append(svgElement("text", {
+      class: "map-name",
+      x: String(-nodeWidth / 2 + 17),
+      y: "20"
+    }, resource.name));
+    svg.append(group);
+  }
+  return svg;
+}
+
+function renderMapImagePreview() {
+  const graph = selectedGraph();
+  if (graph.nodes.length === 0) {
+    throw new Error("No selected resources are available for image export.");
+  }
+  const svg = createMapImageSvg(graph, state.imageExportLayout);
+  elements.mapImagePreview.replaceChildren(svg);
+  elements.mapImageSummary.textContent = `${graph.nodes.length} selected resources · ${graph.edges.length} selected relationships`;
+}
+
+function openMapImageExport() {
+  state.imageExportLayout = "top-down";
+  elements.mapImageLayout.value = state.imageExportLayout;
+  renderMapImagePreview();
+  lockPageScroll();
+  elements.mapImageDialog.showModal();
+  elements.mapImageLayout.focus({ preventScroll: true });
+}
+
+function downloadMapImage() {
+  const graph = selectedGraph();
+  if (graph.nodes.length === 0) {
+    showNotice("Select a valid resource graph before exporting an image.");
+    elements.mapImageDialog.close();
+    return;
+  }
+  const svg = createMapImageSvg(graph, state.imageExportLayout);
+  const source = new XMLSerializer().serializeToString(svg);
+  const blob = new Blob([`<?xml version="1.0" encoding="UTF-8"?>\n${source}`], {
+    type: "image/svg+xml;charset=utf-8"
+  });
+  const downloadUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = downloadUrl;
+  link.download = `${graph.root}-resource-map.svg`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 0);
+  elements.mapImageDialog.close();
+  showNotice(`Downloaded SVG map with ${graph.nodes.length} selected resource${graph.nodes.length === 1 ? "" : "s"}.`);
+}
+
 async function exportTerraform() {
-  const pathResources = state.path.map(resourceById);
-  if (pathResources.length === 0 || pathResources.some((resource) => !resource)) {
-    showNotice("Select a valid resource path before exporting Terraform.");
+  const selectedResources = getSelectedResources();
+  if (selectedResources.length === 0 || selectedResources.some((resource) => !resource)) {
+    showNotice("Select a valid resource graph before exporting Terraform.");
     return;
   }
 
@@ -1117,13 +1643,17 @@ async function exportTerraform() {
   }
 
   const lines = [
-    "# Generated from the selected resource path.",
-    "# Replace each \"REQUIRED\" placeholder before planning or applying.",
-    "# Optional null values are included as editable examples.",
+    "# Generated from the selected resource graph.",
+    "# Selected observed relationships (review provider fields before use):",
+    ...state.selectedEdges.map((edge) => {
+      const relationship = state.relationships.find((item) => item.from === edge.from && item.to === edge.to);
+      return `# - ${edge.from} -> ${edge.to}${relationship?.field ? ` (${relationship.field})` : ""}`;
+    }),
+    "# Replace each \"REQUIRED (type)\" and \"<type>\" placeholder before planning or applying.",
     "# Schema source: HashiCorp AWS provider v6.0.0.",
     ""
   ];
-  for (const resource of pathResources) {
+  for (const resource of selectedResources) {
     const fields = state.configurationFields[resource.id];
     if (!Array.isArray(fields)) {
       throw new Error(`No configurable field schema was found for ${resource.id}.`);
@@ -1135,14 +1665,15 @@ async function exportTerraform() {
 
   state.generatedTerraform = `${formatTerraformLines(lines).join("\n").trimEnd()}\n`;
   elements.terraformPreviewCode.innerHTML = highlightTerraform(state.generatedTerraform);
+  lockPageScroll();
   elements.terraformPreviewDialog.showModal();
-  elements.terraformPreview.focus();
+  elements.terraformPreview.focus({ preventScroll: true });
 }
 
 function downloadTerraform() {
-  const pathResources = state.path.map(resourceById);
-  if (pathResources.length === 0 || pathResources.some((resource) => !resource)) {
-    showNotice("Select a valid resource path before downloading Terraform.");
+  const selectedResources = getSelectedResources();
+  if (selectedResources.length === 0 || selectedResources.some((resource) => !resource)) {
+    showNotice("Select a valid resource graph before downloading Terraform.");
     elements.terraformPreviewDialog.close();
     return;
   }
@@ -1150,13 +1681,17 @@ function downloadTerraform() {
   const downloadUrl = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = downloadUrl;
-  link.download = `${pathResources[0].id}-to-${pathResources[pathResources.length - 1].id}.tf`;
+  const pathEdges = new Set(selectedPathEdges(state.path).map((edge) => `${edge.from}->${edge.to}`));
+  const hasBranches = state.selectedEdges.some((edge) => !pathEdges.has(`${edge.from}->${edge.to}`));
+  link.download = hasBranches
+    ? `${state.path[0]}-branched-resource-graph.tf`
+    : `${state.path[0]}-to-${state.focus}.tf`;
   document.body.append(link);
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 0);
   elements.terraformPreviewDialog.close();
-  showNotice(`Downloaded Terraform boilerplate for ${pathResources.length} selected resource${pathResources.length === 1 ? "" : "s"}.`);
+  showNotice(`Downloaded Terraform boilerplate for ${selectedResources.length} selected resource${selectedResources.length === 1 ? "" : "s"}.`);
 }
 
 async function copyTerraform() {
@@ -1208,9 +1743,38 @@ function initializeEvents() {
   });
   elements.copyTerraform.addEventListener("click", copyTerraform);
   elements.downloadTerraform.addEventListener("click", downloadTerraform);
+  elements.exportMapImage.addEventListener("click", () => {
+    try {
+      openMapImageExport();
+    } catch (error) {
+      showError(`Could not prepare map image preview (${error.message}).`);
+    }
+  });
+  elements.mapImageLayout.addEventListener("change", () => {
+    state.imageExportLayout = elements.mapImageLayout.value;
+    try {
+      renderMapImagePreview();
+    } catch (error) {
+      showError(`Could not update map image preview (${error.message}).`);
+    }
+  });
+  document.querySelector("#download-map-image").addEventListener("click", downloadMapImage);
+  elements.cleanMode.addEventListener("click", () => {
+    if (!state.focus) return;
+    state.cleanMode = !state.cleanMode;
+    state.fitNextRender = true;
+    state.panX = 0;
+    state.panY = 0;
+    renderGraph();
+  });
   document.querySelector("#close-terraform-preview").addEventListener("click", () => {
     elements.terraformPreviewDialog.close();
   });
+  document.querySelector("#close-map-image").addEventListener("click", () => {
+    elements.mapImageDialog.close();
+  });
+  elements.terraformPreviewDialog.addEventListener("close", unlockPageScroll);
+  elements.mapImageDialog.addEventListener("close", unlockPageScroll);
 
   elements.searchForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1231,6 +1795,14 @@ function initializeEvents() {
     const node = event.target.closest(".graph-node");
     if (!node) return;
     if (node.dataset.resourceId) {
+      if (event.target.closest(".node-deselect-control")) {
+        deselectResource(node.dataset.resourceId);
+        return;
+      }
+      if (node.classList.contains("on-path")) {
+        activateSelectedResource(node.dataset.resourceId);
+        return;
+      }
       const pathIndex = Number(node.dataset.pathIndex);
       if (pathIndex >= 0) {
         if (pathIndex < state.path.length - 1) {
@@ -1287,6 +1859,12 @@ function initializeEvents() {
 
   elements.graphContent.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
+    const control = event.target.closest("[data-node-action]");
+    if (control) {
+      event.preventDefault();
+      control.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      return;
+    }
     const node = event.target.closest(".graph-node");
     if (!node) return;
     event.preventDefault();
@@ -1309,6 +1887,7 @@ function initializeEvents() {
   });
 
   elements.graphContent.addEventListener("pointerdown", (event) => {
+    if (event.target.closest(".node-deselect-control")) return;
     const node = event.target.closest(".graph-node");
     if (!node || event.button !== 0) return;
     event.preventDefault();
@@ -1411,6 +1990,7 @@ function initializeEvents() {
   document.querySelector("#reset-button").addEventListener("click", () => {
     state.focus = null;
     state.path = [];
+    state.selectedEdges = [];
     state.expanded.clear();
     state.positions = {};
     state.userZoom = 1;

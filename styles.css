@@ -224,6 +224,8 @@ h1 { margin: 0; color: #e5eff9; font-size: clamp(24px, 3vw, 33px); font-weight: 
   cursor: pointer;
 }
 .icon-button:hover, .mini-button:hover:not(:disabled) { border-color: #3f899c; background: #163449; color: #d7f4f6; }
+.clean-mode-button { width: auto; padding: 0 9px; font-size: 9px; font-weight: 650; }
+.clean-mode-button[aria-pressed="true"] { border-color: #bb8b4e; background: #382d20; color: #ffd08c; }
 
 .graph-frame { position: relative; flex: 1; min-height: 440px; overflow: hidden; border: 1px solid #20384f; border-radius: 9px; background: #091827; }
 .graph-frame::after { position: absolute; z-index: 0; inset: 0; background-image: radial-gradient(#263e54 1px, transparent 1px); background-size: 24px 24px; content: ""; opacity: .46; pointer-events: none; }
@@ -260,6 +262,14 @@ h1 { margin: 0; color: #e5eff9; font-size: clamp(24px, 3vw, 33px); font-weight: 
 .cluster-edge { stroke: #55778c; stroke-dasharray: 4 5; stroke-width: 1.2; opacity: .56; }
 .branch-heading { fill: #6f91a9; font-size: 9px; font-weight: 700; letter-spacing: 1.4px; }
 .graph-node { cursor: pointer; outline: none; }
+.graph-node.resource-node { cursor: default; }
+.node-main-control { cursor: pointer; pointer-events: all; }
+.node-deselect-control { cursor: pointer; }
+.node-deselect-bg { fill: #a44149; fill-opacity: .18; stroke: #db7379; stroke-opacity: .38; stroke-width: 1; transition: fill-opacity .18s ease, stroke-opacity .18s ease; }
+.node-deselect-control:hover .node-deselect-bg, .node-deselect-control:focus .node-deselect-bg { fill-opacity: .48; stroke-opacity: .9; }
+.node-deselect-icon { fill: none; stroke: #ffb0b4; stroke-linecap: round; stroke-width: 2; pointer-events: none; }
+.node-deselect-control:focus { outline: none; }
+.node-deselect-control:focus .node-deselect-bg { stroke: #ffd1d3; stroke-width: 2; }
 .bubble-rect { fill: #10253a; stroke: #31516a; stroke-width: 1.2; transition: fill .2s ease, stroke .2s ease, filter .2s ease; }
 .graph-node:hover .bubble-rect, .graph-node:focus .bubble-rect { fill: #17364b; stroke: #4eaebe; filter: drop-shadow(0 0 8px rgba(64, 197, 216, .16)); }
 .graph-node.selected .bubble-rect { fill: #123547; stroke: #43bfd0; stroke-width: 1.8; filter: drop-shadow(0 0 13px rgba(64, 197, 216, .17)); }
@@ -346,7 +356,8 @@ h1 { margin: 0; color: #e5eff9; font-size: clamp(24px, 3vw, 33px); font-weight: 
 .page-footer a { white-space: nowrap; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
-.mapping-dialog { width: min(420px, calc(100vw - 32px)); padding: 0; border: 1px solid #31516a; border-radius: 12px; background: #0c1e30; color: var(--text); box-shadow: 0 24px 80px rgba(0, 0, 0, .45); }
+body.preview-open { position: fixed; top: var(--preview-scroll-offset); left: 0; right: 0; width: 100%; overflow: hidden; }
+.mapping-dialog { width: min(420px, calc(100vw - 32px)); max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow-y: auto; overscroll-behavior: contain; padding: 0; border: 1px solid #31516a; border-radius: 12px; background: #0c1e30; color: var(--text); box-shadow: 0 24px 80px rgba(0, 0, 0, .45); }
 .export-dialog { width: min(760px, calc(100vw - 32px)); }
 .mapping-dialog::backdrop { background: rgba(2, 9, 17, .72); backdrop-filter: blur(3px); }
 .mapping-dialog form { padding: 23px; }
@@ -358,7 +369,7 @@ h1 { margin: 0; color: #e5eff9; font-size: clamp(24px, 3vw, 33px); font-weight: 
 .mapping-dialog label { display: block; margin-bottom: 7px; color: #a9bfd2; font-size: 11px; }
 .mapping-dialog input { width: 100%; height: 40px; padding: 0 10px; border: 1px solid #31516a; border-radius: 7px; outline: 0; background: #091827; color: #e0edf8; font-size: 12px; }
 .mapping-dialog input:focus { border-color: #40a5b6; box-shadow: 0 0 0 3px rgba(64, 197, 216, .1); }
-.terraform-preview { display: block; width: 100%; min-height: 300px; max-height: 55vh; margin: 0; padding: 13px; overflow: auto; resize: vertical; border: 1px solid #31516a; border-radius: 7px; outline: 0; background: #071423; color: #dceaf5; font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; white-space: pre; }
+.terraform-preview { display: block; width: 100%; min-height: 300px; max-height: 55vh; margin: 0; padding: 13px; overflow: auto; overscroll-behavior: contain; resize: vertical; border: 1px solid #31516a; border-radius: 7px; outline: 0; background: #071423; color: #dceaf5; font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 2; white-space: pre; }
 .terraform-preview:focus { border-color: #40a5b6; box-shadow: 0 0 0 3px rgba(64, 197, 216, .1); }
 .terraform-preview code { font: inherit; }
 .terraform-preview .hcl-keyword { color: #d69cff; }
@@ -367,6 +378,12 @@ h1 { margin: 0; color: #e5eff9; font-size: clamp(24px, 3vw, 33px); font-weight: 
 .terraform-preview .hcl-identifier { color: #8fd7e6; }
 .terraform-preview .hcl-comment { color: #71879e; font-style: italic; }
 .terraform-preview .hcl-punctuation { color: #9fb3c7; }
+.map-image-options { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.map-image-options label { margin: 0; }
+.map-image-options select { min-height: 34px; padding: 0 28px 0 10px; border: 1px solid #31516a; border-radius: 7px; background: #091827; color: #dceaf5; font: inherit; font-size: 11px; }
+.map-image-summary { margin-left: auto; color: #8299b3; font-size: 10px; }
+.map-image-preview { max-height: 58vh; overflow: auto; overscroll-behavior: contain; border: 1px solid #31516a; border-radius: 7px; background: #091827; }
+.map-image-preview svg { display: block; width: auto; max-width: 100%; height: auto; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
 
 @media (max-width: 1100px) {
@@ -414,6 +431,11 @@ h1 { margin: 0; color: #e5eff9; font-size: clamp(24px, 3vw, 33px); font-weight: 
   .saved-preview { min-height: 530px; }
   .saved-preview > .map-panel { min-height: 530px; }
   .page-footer { align-items: flex-start; flex-direction: column; line-height: 1.5; }
+}
+
+@media (max-width: 560px) {
+  .map-image-options { flex-wrap: wrap; }
+  .map-image-summary { flex: 1 0 100%; margin-left: 0; text-align: right; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -9,6 +9,7 @@ from scripts.generate_relationships import (
     classify_argument,
     configurable_fields,
     discover_edges,
+    format_type,
     resource_nodes,
 )
 
@@ -22,7 +23,8 @@ class DiscoverEdgesTests(unittest.TestCase):
                 "block": {
                     "attributes": {
                         "vpc_id": {"required": True},
-                        "cidr_block": {"required": True},
+                        "cidr_block": {"required": True, "type": "string"},
+                        "enable_dns64": {"optional": True, "type": "bool"},
                         "tags": {"optional": True, "type": ["map", "string"]},
                         "arn": {"computed": True, "type": "string"},
                     },
@@ -69,12 +71,21 @@ class DiscoverEdgesTests(unittest.TestCase):
         self.assertEqual(
             fields,
             [
-                {"name": "optional_value", "required": False},
-                {"name": "required_value", "required": True},
+                {"name": "optional_value", "required": False, "type": "bool"},
+                {"name": "required_value", "required": True, "type": "string"},
                 {"name": "timeouts", "required": False, "nestingMode": "single", "block": True, "fields": [
-                    {"name": "create", "required": False}
+                    {"name": "create", "required": False, "type": "string"}
                 ]},
             ],
+        )
+
+    def test_formats_provider_collection_and_structural_types(self):
+        self.assertEqual(format_type(["list", "string"]), "list(string)")
+        self.assertEqual(format_type(["map", "bool"]), "map(bool)")
+        self.assertEqual(format_type(["tuple", ["string", "number"]]), "tuple([string, number])")
+        self.assertEqual(
+            format_type(["object", {"enabled": "bool", "name": "string"}]),
+            "object({enabled = bool, name = string})",
         )
 
     def test_generator_writes_configurable_fields_to_a_sidecar(self):
@@ -94,6 +105,8 @@ class DiscoverEdgesTests(unittest.TestCase):
                                 "block": {
                                     "attributes": {
                                         "vpc_id": {"required": True, "type": "string"},
+                                        "enable_dns64": {"optional": True, "type": "bool"},
+                                        "tags": {"optional": True, "type": ["map", "string"]},
                                         "arn": {"computed": True, "type": "string"},
                                     }
                                 }
@@ -127,7 +140,9 @@ class DiscoverEdgesTests(unittest.TestCase):
             configuration = json.loads(configuration_path.read_text())
 
         self.assertEqual(configuration["aws_subnet"], [
-            {"name": "vpc_id", "required": True},
+            {"name": "enable_dns64", "required": False, "type": "bool"},
+            {"name": "tags", "required": False, "type": "map(string)"},
+            {"name": "vpc_id", "required": True, "type": "string"},
         ])
         self.assertEqual(output["resources"][0]["requiredFields"], ["vpc_id"])
         self.assertNotIn("configFields", output["resources"][0])

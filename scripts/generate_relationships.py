@@ -200,6 +200,26 @@ def provider_resource_index(schema):
     return provider, resources
 
 
+def format_type(type_spec):
+    if isinstance(type_spec, str):
+        return type_spec
+    if not isinstance(type_spec, list) or not type_spec:
+        return "dynamic"
+
+    kind = type_spec[0]
+    if kind in {"list", "set", "map"} and len(type_spec) > 1:
+        return f"{kind}({format_type(type_spec[1])})"
+    if kind == "tuple" and len(type_spec) > 1 and isinstance(type_spec[1], list):
+        return f"tuple([{', '.join(format_type(item) for item in type_spec[1])}])"
+    if kind == "object" and len(type_spec) > 1 and isinstance(type_spec[1], dict):
+        attributes = ", ".join(
+            f"{name} = {format_type(attribute_type)}"
+            for name, attribute_type in sorted(type_spec[1].items())
+        )
+        return f"object({{{attributes}}})"
+    return str(kind)
+
+
 def configurable_fields(block):
     fields = []
     for name, attribute in sorted(block.get("attributes", {}).items()):
@@ -208,11 +228,14 @@ def configurable_fields(block):
         field = {
             "name": name,
             "required": bool(attribute.get("required")),
+            "type": format_type(attribute.get("type")),
         }
         nested_type = attribute.get("nested_type")
         if nested_type:
             field["nestedAttribute"] = True
             field["nestingMode"] = nested_type.get("nesting_mode")
+            nesting_mode = nested_type.get("nesting_mode", "single")
+            field["type"] = f"{nesting_mode}(object)" if nesting_mode in {"list", "set", "map"} else "object"
             field["fields"] = configurable_fields({"attributes": nested_type.get("attributes", {})})
         fields.append(field)
 

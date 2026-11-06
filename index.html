@@ -42,7 +42,8 @@
           <button type="submit" class="button button-primary">Explore</button>
         </form>
         <div class="toolbar-actions">
-          <button id="export-terraform" class="button button-secondary" type="button" disabled title="Preview boilerplate for the selected root-to-resource path">Export Terraform</button>
+          <button id="export-terraform" class="button button-secondary" type="button" disabled title="Preview boilerplate for the selected resource graph">Export Terraform</button>
+          <button id="export-map-image" class="button button-secondary" type="button" disabled title="Preview and download the selected resource map as SVG">Export map image</button>
           <button id="save-button" class="button button-secondary" type="button">＋ Save mapping</button>
           <button id="reset-button" class="button button-quiet" type="button">Reset</button>
         </div>
@@ -77,6 +78,7 @@
               <button id="zoom-out" class="icon-button" type="button" aria-label="Zoom out">−</button>
               <button id="zoom-in" class="icon-button" type="button" aria-label="Zoom in">＋</button>
               <button id="center-map" class="icon-button" type="button" aria-label="Center map">◎</button>
+              <button id="clean-mode" class="icon-button clean-mode-button" type="button" aria-pressed="false" disabled>Clean</button>
               <button id="collapse-groups" class="icon-button" type="button" aria-label="Collapse all collections" title="Collapse all collections" hidden>⊖</button>
             </div>
           </div>
@@ -105,10 +107,10 @@
           </div>
           <div class="map-footer">
             <div class="legend">
-              <span><i class="legend-path-dot"></i>Selected path</span>
+              <span><i class="legend-path-dot"></i>Selected path and branches</span>
               <span><i class="legend-line"></i>Other relationship</span>
             </div>
-            <p>Drag bubbles to arrange · Scroll to zoom · Drag the canvas to pan</p>
+            <p>Select multiple dependants to branch · Drag to arrange · Scroll to zoom</p>
           </div>
         </section>
 
@@ -173,6 +175,26 @@
           <button id="close-terraform-preview" class="button button-quiet" type="button">Close</button>
           <button id="copy-terraform" class="button button-secondary" type="button">Copy</button>
           <button id="download-terraform" class="button button-primary" type="button">Download .tf</button>
+        </div>
+      </div>
+    </dialog>
+    <dialog id="map-image-dialog" class="mapping-dialog export-dialog map-image-dialog" aria-labelledby="map-image-title">
+      <div class="export-dialog-content">
+        <p class="eyebrow">MAP IMAGE EXPORT</p>
+        <h2 id="map-image-title">Preview selected resource map</h2>
+        <p class="export-help">Only selected resources and relationships are included. Choose a layout, then download the preview as a scalable SVG image.</p>
+        <div class="map-image-options">
+          <label for="map-image-layout">Branch layout</label>
+          <select id="map-image-layout">
+            <option value="top-down">Top-down</option>
+            <option value="left-to-right">Left-to-right</option>
+          </select>
+          <span id="map-image-summary" class="map-image-summary"></span>
+        </div>
+        <div id="map-image-preview" class="map-image-preview" aria-label="Selected resource map preview"></div>
+        <div class="dialog-actions">
+          <button id="close-map-image" class="button button-quiet" type="button">Close</button>
+          <button id="download-map-image" class="button button-primary" type="button">Download SVG</button>
         </div>
       </div>
     </dialog>
